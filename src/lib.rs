@@ -132,13 +132,15 @@ impl JitoJsonRpcSDK {
         };
     
         // Wrap the transactions array in another array
-        let params = json!([transactions]);
+        let params = json!(Some(transactions));
     
         // Send the wrapped transactions array
         self.send_request(&endpoint, "sendBundle", Some(params))
             .await
             .map_err(|e| anyhow!("Request error: {}", e))
     }
+
+
 
     pub async fn send_txn(&self, params: Option<Value>, bundle_only: bool) -> Result<Value, reqwest::Error> {
         let mut query_params = Vec::new();
