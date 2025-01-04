@@ -8,43 +8,67 @@ use tonic::transport::Channel;
 #[derive(Debug)]
 pub struct GrpcClient {
     channel: Channel,
+    client: std::sync::Mutex<tonic::client::Grpc<Channel>>,
 }
 
 // 连接到 gRPC 服务器
 impl GrpcClient {
     pub async fn connect(addr: &str) -> Result<Self> {
         let channel = Channel::from_shared(addr.to_string())?.connect().await?;
-        Ok(Self { channel })
+        let client = std::sync::Mutex::new(tonic::client::Grpc::new(channel.clone()));
+        Ok(Self { channel, client })
     }
 
     pub async fn send_bundle(&self, transactions: Value) -> Result<Value> {
-        let mut client = tonic::client::Grpc::new(self.channel.clone());
-        let request = tonic::Request::new(transactions.to_string());
-
+        let transactions_str = transactions.to_string();
         let path = tonic::codegen::http::uri::PathAndQuery::from_static("/api/v1/bundles");
         let codec = tonic::codec::ProstCodec::<String, String>::default();
 
-        // 检查服务是否准备好
-        match client.ready().await {
-            Ok(_) => println!("Service is ready to accept request"),
-            Err(e) => {
-                println!("Service not ready: {}", e);
-                return Err(anyhow!("Service not ready: {}", e));
+        println!("Attempting to send gRPC bundle request...");
+        
+        const MAX_RETRIES: u32 = 5;
+        const INITIAL_DELAY_MS: u64 = 100;
+        let mut current_delay = INITIAL_DELAY_MS;
+
+        for retry in 0..MAX_RETRIES {
+            let mut client = self.client.lock().unwrap();
+            
+            // 等待服务准备好
+            match client.ready().await {
+                Ok(_) => {
+                    println!("Service is ready to accept request");
+                    // 创建新的请求实例
+                    let request = tonic::Request::new(transactions_str.clone());
+                    // 尝试发送请求
+                    match client.unary(request, path.clone(), codec.clone()).await {
+                        Ok(response) => {
+                            println!("Successfully sent gRPC request");
+                            let data = response.into_inner();
+                            return serde_json::from_str(&data).map_err(|e| anyhow!("Failed to parse response: {}", e));
+                        }
+                        Err(e) => {
+                            println!("Failed to send gRPC request (attempt {}): {}", retry + 1, e);
+                            if retry == MAX_RETRIES - 1 {
+                                return Err(anyhow!("Failed to send gRPC request after {} retries: {}", MAX_RETRIES, e));
+                            }
+                        }
+                    }
+                }
+                Err(e) => {
+                    println!("Service not ready (attempt {}): {}", retry + 1, e);
+                    if retry == MAX_RETRIES - 1 {
+                        return Err(anyhow!("Service not ready after {} retries: {}", MAX_RETRIES, e));
+                    }
+                }
             }
+            
+            // 释放锁并等待
+            drop(client);
+            tokio::time::sleep(std::time::Duration::from_millis(current_delay)).await;
+            current_delay *= 2; // 指数退避
         }
 
-        // 发送请求
-        match client.unary(request, path, codec).await {
-            Ok(response) => {
-                println!("Successfully sent gRPC request");
-                let data = response.into_inner();
-                serde_json::from_str(&data).map_err(|e| anyhow!("Failed to parse response: {}", e))
-            }
-            Err(e) => {
-                println!("Failed to send gRPC request: {}", e);
-                Err(anyhow!("Failed to send gRPC request: {}", e))
-            }
-        }
+        Err(anyhow!("Unexpected: reached end of retry loop"))
     }
 }
 
