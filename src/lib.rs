@@ -8,14 +8,14 @@ use tonic::transport::Channel;
 #[derive(Debug)]
 pub struct GrpcClient {
     channel: Channel,
-    client: std::sync::Mutex<tonic::client::Grpc<Channel>>,
+    client: tokio::sync::Mutex<tonic::client::Grpc<Channel>>,
 }
 
 // 连接到 gRPC 服务器
 impl GrpcClient {
     pub async fn connect(addr: &str) -> Result<Self> {
         let channel = Channel::from_shared(addr.to_string())?.connect().await?;
-        let client = std::sync::Mutex::new(tonic::client::Grpc::new(channel.clone()));
+        let client = tokio::sync::Mutex::new(tonic::client::Grpc::new(channel.clone()));
         Ok(Self { channel, client })
     }
 
@@ -31,7 +31,7 @@ impl GrpcClient {
         let mut current_delay = INITIAL_DELAY_MS;
 
         for retry in 0..MAX_RETRIES {
-            let mut client = self.client.lock().unwrap();
+            let mut client = self.client.lock().await;
             
             // 等待服务准备好
             match client.ready().await {
