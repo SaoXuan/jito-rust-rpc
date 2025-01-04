@@ -10,6 +10,7 @@ pub struct GrpcClient {
     channel: Channel,
 }
 
+// 连接到 gRPC 服务器
 impl GrpcClient {
     pub async fn connect(addr: &str) -> Result<Self> {
         let channel = Channel::from_shared(addr.to_string())?
