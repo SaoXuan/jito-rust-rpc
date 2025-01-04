@@ -23,7 +23,7 @@ impl GrpcClient {
         let mut client = tonic::client::Grpc::new(self.channel.clone());
         let request = tonic::Request::new(transactions.to_string());
 
-        let path = tonic::codegen::http::uri::PathAndQuery::from_static("/jito.JitoService/SendBundle");
+        let path = tonic::codegen::http::uri::PathAndQuery::from_static("/api/v1/bundles");
         let codec = tonic::codec::ProstCodec::<String, String>::default();
 
         let response = client.unary(request, path, codec).await?;
@@ -232,7 +232,7 @@ impl JitoJsonRpcSDK {
                     if serialized_txs.len() > 5 {
                         return Err(anyhow!("Bundle can contain at most 5 transactions"));
                     }
-                    &outer_array[0]
+                    outer_array[0].clone()
                 } else {
                     return Err(anyhow!("First element must be an array of transactions"));
                 }
@@ -240,7 +240,7 @@ impl JitoJsonRpcSDK {
             _ => return Err(anyhow!("Invalid bundle format: expected [serialized_txs, options]")),
         };
 
-        client.send_bundle(transactions.clone()).await
+        client.send_bundle(transactions).await
     }
 
     pub fn prettify(value: Value) -> PrettyJsonValue {
