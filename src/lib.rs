@@ -14,17 +14,28 @@ pub struct GrpcClient {
 // 连接到 gRPC 服务器
 impl GrpcClient {
     pub async fn connect(addr: &str) -> Result<Self> {
-        let channel = Channel::from_shared(addr.to_string())?.connect().await?;
+        println!("Connecting to gRPC server at: {}", addr);
+        let channel = Channel::from_shared(addr.to_string())?
+            .connect_timeout(std::time::Duration::from_secs(5))
+            .timeout(std::time::Duration::from_secs(5))
+            .tcp_keepalive(Some(std::time::Duration::from_secs(60)))
+            .http2_keep_alive_interval(std::time::Duration::from_secs(60))
+            .connect()
+            .await?;
+        
+        println!("Successfully established gRPC channel");
         let client = tokio::sync::Mutex::new(tonic::client::Grpc::new(channel.clone()));
         Ok(Self { channel, client })
     }
 
     pub async fn send_bundle(&self, transactions: Value) -> Result<Value> {
         let transactions_str = transactions.to_string();
+        println!("Transaction payload: {}", transactions_str);
+        
         let path = tonic::codegen::http::uri::PathAndQuery::from_static("/api/v1/bundles");
         let codec = tonic::codec::ProstCodec::<String, String>::default();
 
-        println!("Attempting to send gRPC bundle request...");
+        println!("Attempting to send gRPC bundle request to path: {}", path);
         
         const MAX_RETRIES: u32 = 5;
         const INITIAL_DELAY_MS: u64 = 100;
