@@ -1,3 +1,9 @@
+pub mod jito {
+    tonic::include_proto!("jito");
+}
+
+use jito::jito_service_client::JitoServiceClient;
+use jito::{SendBundleRequest, GetTipAccountsRequest, GetBundleStatusesRequest};
 use anyhow::{anyhow, Result};
 use rand::seq::SliceRandom;
 use reqwest::Client;
@@ -7,11 +13,9 @@ use tonic::transport::Channel;
 
 #[derive(Debug)]
 pub struct GrpcClient {
-    channel: Channel,
-    client: tokio::sync::Mutex<tonic::client::Grpc<Channel>>,
+    client: JitoServiceClient<Channel>,
 }
 
-// 连接到 gRPC 服务器
 impl GrpcClient {
     pub async fn connect(addr: &str) -> Result<Self> {
         println!("Connecting to gRPC server at: {}", addr);
@@ -22,64 +26,65 @@ impl GrpcClient {
             .http2_keep_alive_interval(std::time::Duration::from_secs(60))
             .connect()
             .await?;
-        
+            
+        let client = JitoServiceClient::new(channel);
         println!("Successfully established gRPC channel");
-        let client = tokio::sync::Mutex::new(tonic::client::Grpc::new(channel.clone()));
-        Ok(Self { channel, client })
+        
+        Ok(Self { client })
     }
 
-    pub async fn send_bundle(&self, transactions: Value) -> Result<Value> {
+    pub async fn send_bundle(&self, transactions: Value, uuid: Option<String>) -> Result<Value> {
         let transactions_str = transactions.to_string();
         println!("Transaction payload: {}", transactions_str);
         
-        let path = tonic::codegen::http::uri::PathAndQuery::from_static("/api/v1/bundles");
-        let codec = tonic::codec::ProstCodec::<String, String>::default();
-
-        println!("Attempting to send gRPC bundle request to path: {}", path);
+        let request = tonic::Request::new(SendBundleRequest {
+            transactions: vec![transactions_str],
+            uuid,
+        });
         
-        const MAX_RETRIES: u32 = 5;
-        const INITIAL_DELAY_MS: u64 = 100;
-        let mut current_delay = INITIAL_DELAY_MS;
-
-        for retry in 0..MAX_RETRIES {
-            let mut client = self.client.lock().await;
-            
-            // 等待服务准备好
-            match client.ready().await {
-                Ok(_) => {
-                    println!("Service is ready to accept request");
-                    // 创建新的请求实例
-                    let request = tonic::Request::new(transactions_str.clone());
-                    // 尝试发送请求
-                    match client.unary(request, path.clone(), codec.clone()).await {
-                        Ok(response) => {
-                            println!("Successfully sent gRPC request");
-                            let data = response.into_inner();
-                            return serde_json::from_str(&data).map_err(|e| anyhow!("Failed to parse response: {}", e));
-                        }
-                        Err(e) => {
-                            println!("Failed to send gRPC request (attempt {}): {}", retry + 1, e);
-                            if retry == MAX_RETRIES - 1 {
-                                return Err(anyhow!("Failed to send gRPC request after {} retries: {}", MAX_RETRIES, e));
-                            }
-                        }
-                    }
-                }
-                Err(e) => {
-                    println!("Service not ready (attempt {}): {}", retry + 1, e);
-                    if retry == MAX_RETRIES - 1 {
-                        return Err(anyhow!("Service not ready after {} retries: {}", MAX_RETRIES, e));
-                    }
-                }
+        println!("Attempting to send gRPC bundle request");
+        
+        match self.client.clone().send_bundle(request).await {
+            Ok(response) => {
+                println!("Successfully sent gRPC request");
+                let response = response.into_inner();
+                Ok(serde_json::json!({
+                    "bundle_id": response.bundle_id,
+                    "status": response.status,
+                }))
             }
-            
-            // 释放锁并等待
-            drop(client);
-            tokio::time::sleep(std::time::Duration::from_millis(current_delay)).await;
-            current_delay *= 2; // 指数退避
+            Err(e) => {
+                println!("Failed to send gRPC request: {}", e);
+                Err(anyhow!("Failed to send gRPC request: {}", e))
+            }
         }
+    }
 
-        Err(anyhow!("Unexpected: reached end of retry loop"))
+    pub async fn get_tip_accounts(&self, uuid: Option<String>) -> Result<Value> {
+        let request = tonic::Request::new(GetTipAccountsRequest { uuid });
+        
+        match self.client.clone().get_tip_accounts(request).await {
+            Ok(response) => {
+                let response = response.into_inner();
+                Ok(serde_json::json!(response.accounts))
+            }
+            Err(e) => Err(anyhow!("Failed to get tip accounts: {}", e))
+        }
+    }
+
+    pub async fn get_bundle_statuses(&self, bundle_uuids: Vec<String>, uuid: Option<String>) -> Result<Value> {
+        let request = tonic::Request::new(GetBundleStatusesRequest {
+            bundle_uuids,
+            uuid,
+        });
+        
+        match self.client.clone().get_bundle_statuses(request).await {
+            Ok(response) => {
+                let response = response.into_inner();
+                Ok(serde_json::json!(response.statuses))
+            }
+            Err(e) => Err(anyhow!("Failed to get bundle statuses: {}", e))
+        }
     }
 }
 
@@ -185,7 +190,7 @@ impl JitoJsonRpcSDK {
             .as_mut()
             .ok_or_else(|| anyhow!("gRPC not enabled. Call enable_grpc() first"))?;
 
-        let mut grpc = tonic::client::Grpc::new(client.channel.clone());
+        let params_clone = params.clone();
         let request = tonic::Request::new(
             serde_json::json!({
                 "endpoint": endpoint,
@@ -195,18 +200,7 @@ impl JitoJsonRpcSDK {
             .to_string(),
         );
 
-        let response = grpc
-            .unary(
-                request,
-                tonic::codegen::http::uri::PathAndQuery::from_static(
-                    "/jito.JitoService/SendRequest",
-                ),
-                tonic::codec::ProstCodec::<String, String>::default(),
-            )
-            .await?;
-
-        let data = response.into_inner();
-        serde_json::from_str(&data).map_err(|e| anyhow!("Failed to parse response: {}", e))
+        client.send_bundle(params_clone.unwrap_or(json!([])), None).await
     }
 
     pub async fn get_tip_accounts(&self) -> Result<Value, reqwest::Error> {
@@ -219,15 +213,12 @@ impl JitoJsonRpcSDK {
         self.send_request(&endpoint, "getTipAccounts", None).await
     }
 
-    pub async fn get_tip_accounts_with_grpc(&mut self) -> Result<Value> {
-        let endpoint = if let Some(uuid) = &self.uuid {
-            format!("/bundles?uuid={}", uuid)
-        } else {
-            "/bundles".to_string()
-        };
+    pub async fn get_tip_accounts_with_grpc(&self) -> Result<Value> {
+        let client = self.grpc_client
+            .as_ref()
+            .ok_or_else(|| anyhow!("gRPC not enabled. Call enable_grpc() first"))?;
 
-        self.send_request_grpc(&endpoint, "getTipAccounts", None)
-            .await
+        client.get_tip_accounts(self.uuid.clone()).await
     }
 
     pub async fn get_random_tip_account(&self) -> Result<String> {
@@ -265,19 +256,12 @@ impl JitoJsonRpcSDK {
             .map_err(|e| anyhow!("Request error: {}", e))
     }
 
-    pub async fn get_bundle_statuses_with_grpc(
-        &mut self,
-        bundle_uuids: Vec<String>,
-    ) -> Result<Value> {
-        let endpoint = if let Some(uuid) = &self.uuid {
-            format!("/bundles?uuid={}", uuid)
-        } else {
-            "/bundles".to_string()
-        };
+    pub async fn get_bundle_statuses_with_grpc(&self, bundle_uuids: Vec<String>) -> Result<Value> {
+        let client = self.grpc_client
+            .as_ref()
+            .ok_or_else(|| anyhow!("gRPC not enabled. Call enable_grpc() first"))?;
 
-        let params = json!([bundle_uuids]);
-        self.send_request_grpc(&endpoint, "getBundleStatuses", Some(params))
-            .await
+        client.get_bundle_statuses(bundle_uuids, self.uuid.clone()).await
     }
 
     pub async fn send_bundle(
@@ -326,7 +310,6 @@ impl JitoJsonRpcSDK {
             .as_ref()
             .ok_or_else(|| anyhow!("gRPC not enabled. Call enable_grpc() first"))?;
 
-        // 验证参数格式
         let transactions = match params {
             Some(Value::Array(outer_array)) if outer_array.len() >= 1 => {
                 if let Some(serialized_txs) = outer_array[0].as_array() {
@@ -344,7 +327,7 @@ impl JitoJsonRpcSDK {
             _ => return Err(anyhow!("Invalid bundle format: expected [serialized_txs, options]")),
         };
 
-        client.send_bundle(transactions).await
+        client.send_bundle(transactions, uuid.map(String::from)).await
     }
 
     pub fn prettify(value: Value) -> PrettyJsonValue {
