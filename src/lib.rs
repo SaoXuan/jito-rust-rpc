@@ -17,7 +17,7 @@ impl GrpcClient {
         Ok(Self { channel })
     }
 
-    pub async fn send_bundle(&mut self, transactions: Value) -> Result<Value> {
+    pub async fn send_bundle(&self, transactions: Value) -> Result<Value> {
         let mut client = tonic::client::Grpc::new(self.channel.clone());
         let request = tonic::Request::new(transactions.to_string());
 
@@ -265,13 +265,12 @@ impl JitoJsonRpcSDK {
     }
 
     pub async fn send_bundle_with_grpc(
-        &mut self,
+        &self,
         params: Option<Value>,
         uuid: Option<&str>,
     ) -> Result<Value> {
-        let client = self
-            .grpc_client
-            .as_mut()
+        let client = self.grpc_client
+            .as_ref()
             .ok_or_else(|| anyhow!("gRPC not enabled. Call enable_grpc() first"))?;
 
         // 验证参数格式
@@ -289,11 +288,7 @@ impl JitoJsonRpcSDK {
                     return Err(anyhow!("First element must be an array of transactions"));
                 }
             }
-            _ => {
-                return Err(anyhow!(
-                    "Invalid bundle format: expected [serialized_txs, options]"
-                ))
-            }
+            _ => return Err(anyhow!("Invalid bundle format: expected [serialized_txs, options]")),
         };
 
         client.send_bundle(transactions).await
