@@ -19,22 +19,14 @@ impl GrpcClient {
         Ok(Self { channel })
     }
 
-    pub async fn send_request(&mut self, endpoint: &str, method: &str, params: Option<Value>) -> Result<Value> {
+    pub async fn send_bundle(&mut self, transactions: Value) -> Result<Value> {
         let mut client = tonic::client::Grpc::new(self.channel.clone());
-        let request = tonic::Request::new(
-            serde_json::json!({
-                "endpoint": endpoint,
-                "method": method,
-                "params": params.unwrap_or(json!([]))
-            }).to_string()
-        );
+        let request = tonic::Request::new(transactions.to_string());
 
-        let response = client.unary(
-            request,
-            tonic::codegen::http::uri::PathAndQuery::from_static("/jito.JitoService/SendRequest"),
-            tonic::codec::ProstCodec::<String, String>::default(),
-        ).await?;
+        let path = tonic::codegen::http::uri::PathAndQuery::from_static("/jito.JitoService/SendBundle");
+        let codec = tonic::codec::ProstCodec::<String, String>::default();
 
+        let response = client.unary(request, path, codec).await?;
         let data = response.into_inner();
         serde_json::from_str(&data).map_err(|e| anyhow!("Failed to parse response: {}", e))
     }
@@ -227,15 +219,12 @@ impl JitoJsonRpcSDK {
     }
 
     pub async fn send_bundle_with_grpc(&mut self, params: Option<Value>, uuid: Option<&str>) -> Result<Value> {
-        let mut endpoint = "/bundles".to_string();
-        
-        if let Some(uuid) = uuid {
-            endpoint = format!("{}?uuid={}", endpoint, uuid);
-        }
+        let client = self.grpc_client.as_mut()
+            .ok_or_else(|| anyhow!("gRPC not enabled. Call enable_grpc() first"))?;
 
         // 验证参数格式
-        if let Some(Value::Array(outer_array)) = &params {
-            if outer_array.len() >= 1 {
+        let transactions = match params {
+            Some(Value::Array(outer_array)) if outer_array.len() >= 1 => {
                 if let Some(serialized_txs) = outer_array[0].as_array() {
                     if serialized_txs.is_empty() {
                         return Err(anyhow!("Bundle must contain at least one transaction"));
@@ -243,15 +232,15 @@ impl JitoJsonRpcSDK {
                     if serialized_txs.len() > 5 {
                         return Err(anyhow!("Bundle can contain at most 5 transactions"));
                     }
+                    &outer_array[0]
                 } else {
                     return Err(anyhow!("First element must be an array of transactions"));
                 }
-            } else {
-                return Err(anyhow!("Invalid bundle format: expected [serialized_txs, options]"));
-            }
-        }
+            },
+            _ => return Err(anyhow!("Invalid bundle format: expected [serialized_txs, options]")),
+        };
 
-        self.send_request_grpc(&endpoint, "sendBundle", params).await
+        client.send_bundle(transactions.clone()).await
     }
 
     pub fn prettify(value: Value) -> PrettyJsonValue {
