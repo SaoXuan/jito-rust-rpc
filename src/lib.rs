@@ -117,25 +117,25 @@ impl JitoJsonRpcSDK {
             endpoint = format!("{}?uuid={}", endpoint, uuid);
         }
     
-        // Ensure params is an array of transactions
+        // 验证参数格式并提取 serialized_txs
         let transactions = match params {
-            Some(Value::Array(transactions)) => {
-                if transactions.is_empty() {
-                    return Err(anyhow!("Bundle must contain at least one transaction"));
+            Some(Value::Array(outer_array)) if outer_array.len() >= 1 => {
+                if let Some(serialized_txs) = outer_array[0].as_array() {
+                    if serialized_txs.is_empty() {
+                        return Err(anyhow!("Bundle must contain at least one transaction"));
+                    }
+                    if serialized_txs.len() > 5 {
+                        return Err(anyhow!("Bundle can contain at most 5 transactions"));
+                    }
+                    outer_array
+                } else {
+                    return Err(anyhow!("First element must be an array of transactions"));
                 }
-                if transactions.len() > 5 {
-                    return Err(anyhow!("Bundle can contain at most 5 transactions"));
-                }
-                transactions
             },
-            _ => return Err(anyhow!("Invalid bundle format: expected an array of transactions")),
+            _ => return Err(anyhow!("Invalid bundle format: expected [serialized_txs, options]")),
         };
     
-        // Wrap the transactions array in another array
-        let params = json!(Some(transactions));
-    
-        // Send the wrapped transactions array
-        self.send_request(&endpoint, "sendBundle", Some(params))
+        self.send_request(&endpoint, "sendBundle", Some(json!(transactions)))
             .await
             .map_err(|e| anyhow!("Request error: {}", e))
     }
