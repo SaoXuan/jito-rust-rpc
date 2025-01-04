@@ -24,9 +24,27 @@ impl GrpcClient {
         let path = tonic::codegen::http::uri::PathAndQuery::from_static("/api/v1/bundles");
         let codec = tonic::codec::ProstCodec::<String, String>::default();
 
-        let response = client.unary(request, path, codec).await?;
-        let data = response.into_inner();
-        serde_json::from_str(&data).map_err(|e| anyhow!("Failed to parse response: {}", e))
+        // 检查服务是否准备好
+        match client.ready().await {
+            Ok(_) => println!("Service is ready to accept request"),
+            Err(e) => {
+                println!("Service not ready: {}", e);
+                return Err(anyhow!("Service not ready: {}", e));
+            }
+        }
+
+        // 发送请求
+        match client.unary(request, path, codec).await {
+            Ok(response) => {
+                println!("Successfully sent gRPC request");
+                let data = response.into_inner();
+                serde_json::from_str(&data).map_err(|e| anyhow!("Failed to parse response: {}", e))
+            }
+            Err(e) => {
+                println!("Failed to send gRPC request: {}", e);
+                Err(anyhow!("Failed to send gRPC request: {}", e))
+            }
+        }
     }
 }
 
