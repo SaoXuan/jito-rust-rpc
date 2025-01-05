@@ -7,6 +7,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .build_server(false)
         .out_dir(out_dir)
         .type_attribute(".", "#[derive(serde::Serialize, serde::Deserialize)]")
-        .compile(&["proto/jito.proto"], &["proto"])?;
+        .compile(
+            &[
+                "proto/jito-protos/proto/block_engine.proto",
+                "proto/jito-protos/proto/bundle.proto",
+                "proto/jito-protos/proto/packet.proto",
+                "proto/jito-protos/proto/shared.proto",
+            ],
+            &["proto/jito-protos/proto"],
+        )?;
     Ok(())
 } 

@@ -15,6 +15,22 @@ use tonic::transport::Channel;
 pub struct GrpcClient {
     client: JitoServiceClient<Channel>,
 }
+// 在 lib.rs 或其他需要使用的文件中
+pub mod block_engine {
+    tonic::include_proto!("block_engine");
+}
+
+pub mod bundle {
+    tonic::include_proto!("bundle");
+}
+
+pub mod packet {
+    tonic::include_proto!("packet");
+}
+
+pub mod shared {
+    tonic::include_proto!("shared");
+}
 
 impl GrpcClient {
     pub async fn connect(addr: &str) -> Result<Self> {
