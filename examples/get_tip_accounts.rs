@@ -12,9 +12,9 @@ pub async fn get_tip_accounts() -> Result<(), Box<dyn std::error::Error>> {
     
     // 获取小费账户
     match client.get_tip_accounts().await {
-        Ok(accounts) => {
+        Ok(response) => {
             println!("获取到的小费账户列表:");
-            for (index, account) in accounts.iter().enumerate() {
+            for (index, account) in response.accounts.iter().enumerate() {
                 println!("{}. {}", index + 1, account);
             }
         },
@@ -30,12 +30,13 @@ pub async fn get_tip_accounts_by_sdk() -> Result<(), Box<dyn std::error::Error>>
     // 连接到 Jito 的服务端点
     let mut sdk = JitoJsonRpcSDK::new("https://mainnet.block-engine.jito.wtf", None);
    
+   
     // 获取小费账户
     match sdk.get_tip_accounts_grpc().await {
-        Ok(accounts) => {
+        Ok(response) => {
             println!("获取到的小费账户列表:");
-            if let Some(accounts_array) = accounts.as_array() {
-                for (index, account) in accounts_array.iter().enumerate() {
+            if let Some(accounts) = response["result"].as_array() {
+                for (index, account) in accounts.iter().enumerate() {
                     println!("{}. {}", index + 1, account);
                 }
             }

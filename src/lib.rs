@@ -1,10 +1,12 @@
 // 导入必要的外部依赖
-use tonic::transport::{Channel, Error as TransportError, Uri};
 use anyhow::{anyhow, Result};
+use proto::packet::Packet as ProtoPacket;
+use rand::seq::SliceRandom;
 use reqwest::Client;
 use serde_json::{json, Value};
+use solana_sdk::transaction::VersionedTransaction;
 use std::fmt;
-use rand::seq::SliceRandom;
+use tonic::transport::{Channel, Error as TransportError, Uri};
 
 // 定义 protobuf 生成的模块
 pub mod proto {
@@ -31,7 +33,9 @@ pub mod proto {
 pub use proto::block_engine::block_engine_validator_client::BlockEngineValidatorClient as BlockEngineClient;
 pub use proto::bundle::{Bundle, BundleResult};
 pub use proto::searcher::searcher_service_client::SearcherServiceClient;
-pub use proto::searcher::{GetTipAccountsRequest, GetTipAccountsResponse};
+pub use proto::searcher::{
+    GetTipAccountsRequest, GetTipAccountsResponse, SendBundleRequest, SendBundleResponse,
+};
 
 // gRPC 客户端封装
 #[derive(Debug)]
@@ -47,30 +51,48 @@ impl GrpcClient {
             .connect()
             .await
             .map_err(|e| anyhow!("Failed to connect: {}", e))?;
-            
+
         let client = SearcherServiceClient::new(channel);
         Ok(Self { client })
     }
 
     // 获取 tip accounts 列表
-    pub async fn get_tip_accounts(&mut self) -> Result<Vec<String>> {
+    pub async fn get_tip_accounts(&mut self) -> Result<GetTipAccountsResponse> {
         let request = tonic::Request::new(GetTipAccountsRequest {});
-        
+
         match self.client.get_tip_accounts(request).await {
             Ok(response) => {
                 let response = response.into_inner();
-                Ok(response.accounts)
+                Ok(response)
             }
-            Err(e) => Err(anyhow!("Failed to get tip accounts: {}", e))
+            Err(e) => Err(anyhow!("Failed to get tip accounts: {}", e)),
+        }
+    }
+
+    // 发送 bundle
+    pub async fn send_bundle(&mut self, transactions: Vec<VersionedTransaction>) -> Result<String> {
+        let request = tonic::Request::new(SendBundleRequest {
+            bundle: Some(Bundle {
+                header: None,
+                packets: transactions
+                    .iter()
+                    .map(proto_packet_from_versioned_tx)
+                    .collect(),
+            }),
+        });
+
+        match self.client.send_bundle(request).await {
+            Ok(response) => Ok(response.into_inner().uuid),
+            Err(e) => Err(anyhow!("Failed to send bundle: {}", e)),
         }
     }
 }
 
 // JSON-RPC SDK 实现
 pub struct JitoJsonRpcSDK {
-    base_url: String,      // API 基础 URL
-    uuid: Option<String>,  // 可选的 UUID
-    client: Client,        // HTTP 客户端
+    base_url: String,                // API 基础 URL
+    uuid: Option<String>,            // 可选的 UUID
+    client: Client,                  // HTTP 客户端
     grpc_client: Option<GrpcClient>, // 可选的 gRPC 客户端
 }
 
@@ -161,18 +183,6 @@ impl JitoJsonRpcSDK {
         Ok(body)
     }
 
-
-    pub async fn get_tip_accounts(&self) -> Result<Value, reqwest::Error> {
-        let endpoint = if let Some(uuid) = &self.uuid {
-            format!("/bundles?uuid={}", uuid)
-        } else {
-            "/bundles".to_string()
-        };
-
-        self.send_request(&endpoint, "getTipAccounts", None).await
-    }
-
-
     // 获取随机的 tip account
     pub async fn get_random_tip_account(&self) -> Result<String> {
         let tip_accounts_response = self.get_tip_accounts().await?;
@@ -209,6 +219,58 @@ impl JitoJsonRpcSDK {
             .map_err(|e| anyhow!("Request error: {}", e))
     }
 
+    pub async fn get_tip_accounts(&self) -> Result<Value, reqwest::Error> {
+        let endpoint = if let Some(uuid) = &self.uuid {
+            format!("/bundles?uuid={}", uuid)
+        } else {
+            "/bundles".to_string()
+        };
+
+        self.send_request(&endpoint, "getTipAccounts", None).await
+    }
+
+    // 新增 GRPC 版本的 get_tip_accounts 方法
+    pub async fn get_tip_accounts_grpc(&mut self) -> Result<Value> {
+        let grpc_client = self
+            .grpc_client
+            .as_mut()
+            .ok_or_else(|| anyhow!("gRPC not enabled. Call enable_grpc() first"))?;
+
+        let response = grpc_client.get_tip_accounts().await?;
+
+        Ok(json!({
+            "grpc": "2.0",
+            "id": 1,
+            "result": response.accounts
+        }))
+    }
+
+    pub fn prettify(value: Value) -> PrettyJsonValue {
+        PrettyJsonValue(value)
+    }
+
+    // 校验 bundle 参数
+    fn validate_bundle_params(params: &Option<Value>) -> Result<()> {
+        match params {
+            Some(Value::Array(outer_array)) if outer_array.len() >= 1 => {
+                if let Some(serialized_txs) = outer_array[0].as_array() {
+                    if serialized_txs.is_empty() {
+                        return Err(anyhow!("Bundle must contain at least one transaction"));
+                    }
+                    if serialized_txs.len() > 5 {
+                        return Err(anyhow!("Bundle can contain at most 5 transactions"));
+                    }
+                    Ok(())
+                } else {
+                    Err(anyhow!("First element must be an array of transactions"))
+                }
+            }
+            _ => Err(anyhow!(
+                "Invalid bundle format: expected [serialized_txs, options]"
+            )),
+        }
+    }
+
     // 发送交易包
     pub async fn send_bundle(
         &self,
@@ -221,75 +283,46 @@ impl JitoJsonRpcSDK {
             endpoint = format!("{}?uuid={}", endpoint, uuid);
         }
 
-        let transactions = match params {
-            Some(Value::Array(outer_array)) if outer_array.len() >= 1 => {
-                if let Some(serialized_txs) = outer_array[0].as_array() {
-                    if serialized_txs.is_empty() {
-                        return Err(anyhow!("Bundle must contain at least one transaction"));
-                    }
-                    if serialized_txs.len() > 5 {
-                        return Err(anyhow!("Bundle can contain at most 5 transactions"));
-                    }
-                    outer_array
-                } else {
-                    return Err(anyhow!("First element must be an array of transactions"));
-                }
-            }
-            _ => {
-                return Err(anyhow!(
-                    "Invalid bundle format: expected [serialized_txs, options]"
-                ))
-            }
-        };
+        // 先进行参数校验
+        Self::validate_bundle_params(&params)?;
 
-        self.send_request(&endpoint, "sendBundle", Some(json!(transactions)))
+        self.send_request(&endpoint, "sendBundle", params)
             .await
             .map_err(|e| anyhow!("Request error: {}", e))
     }
 
-    // pub async fn send_bundle_with_grpc(
-    //     &self,
-    //     params: Option<Value>,
-    //     uuid: Option<&str>,
-    // ) -> Result<Value> {
-    //     let client = self.grpc_client
-    //         .as_ref()
-    //         .ok_or_else(|| anyhow!("gRPC not enabled. Call enable_grpc() first"))?;
-
-    //     let transactions = match params {
-    //         Some(Value::Array(outer_array)) if outer_array.len() >= 1 => {
-    //             if let Some(serialized_txs) = outer_array[0].as_array() {
-    //                 if serialized_txs.is_empty() {
-    //                     return Err(anyhow!("Bundle must contain at least one transaction"));
-    //                 }
-    //                 if serialized_txs.len() > 5 {
-    //                     return Err(anyhow!("Bundle can contain at most 5 transactions"));
-    //                 }
-    //                 outer_array[0].clone()
-    //             } else {
-    //                 return Err(anyhow!("First element must be an array of transactions"));
-    //             }
-    //         }
-    //         _ => return Err(anyhow!("Invalid bundle format: expected [serialized_txs, options]")),
-    //     };
-
-    //     client.send_bundle(transactions, uuid.map(String::from)).await
-    // }
-
-
-    // 新增 GRPC 版本的 get_tip_accounts 方法
-    pub async fn get_tip_accounts_grpc(&mut self) -> Result<Value> {
-        let grpc_client = self.grpc_client
+    // gprc 版本发送交易包
+    pub async fn send_bundle_with_grpc(
+        &mut self,
+        bundle: Bundle,
+        _uuid: Option<&str>,
+    ) -> Result<Value> {
+        let grpc_client = self
+            .grpc_client
             .as_mut()
             .ok_or_else(|| anyhow!("gRPC not enabled. Call enable_grpc() first"))?;
-            
-        let accounts = grpc_client.get_tip_accounts().await?;
-        
-        Ok(json!(accounts))
-    }
 
-    pub fn prettify(value: Value) -> PrettyJsonValue {
-        PrettyJsonValue(value)
-    }
+        // 发送 bundle 请求
+        let request = tonic::Request::new(SendBundleRequest {
+            bundle: Some(bundle)
+        });
 
+        let response = grpc_client.client.send_bundle(request).await?;
+
+        // 将响应转换为 JSON 格式
+        Ok(json!({
+            "grpc": "2.0",
+            "id": 1,
+            "result": {
+                "bundle_id": response.into_inner().uuid
+            }
+        }))
+    }
+}
+
+fn proto_packet_from_versioned_tx(tx: &VersionedTransaction) -> ProtoPacket {
+    ProtoPacket {
+        data: bincode::serialize(&tx).unwrap(),
+        meta: None,
+    }
 }
