@@ -155,7 +155,17 @@ impl JitoJsonRpcSDK {
         self.send_request(&endpoint, "getTipAccounts", None).await
     }
 
-   
+    // 新增 GRPC 版本的 get_tip_accounts 方法
+    pub async fn get_tip_accounts_grpc(&self) -> Result<Value> {
+        let grpc_client = GrpcClient::connect(&self.grpc_url.clone().unwrap_or_default()).await?;
+        let response = grpc_client.get_tip_accounts().await?;
+
+        Ok(json!({
+            "grpc": "2.0",
+            "id": 1,
+            "result": response.accounts
+        }))
+    }
 
     pub fn prettify(value: Value) -> PrettyJsonValue {
         PrettyJsonValue(value)
