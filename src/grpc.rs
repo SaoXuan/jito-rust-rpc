@@ -1,23 +1,21 @@
 use anyhow::{anyhow, Result};
 use crate::proto::packet::Packet as ProtoPacket;
-use crate::proto::bundle::{Bundle, BundleResult};
+use crate::proto::bundle::{Bundle};
 use crate::proto::searcher::{
-    GetTipAccountsRequest, GetTipAccountsResponse, SendBundleRequest, SendBundleResponse,
+    GetTipAccountsRequest, GetTipAccountsResponse, SendBundleRequest,
 };
 use crate::proto::searcher::searcher_service_client::SearcherServiceClient;
 use solana_sdk::transaction::VersionedTransaction;
 use std::sync::Arc;
-use tokio::sync::Mutex;
 use tonic::transport::{Channel, Endpoint};
+use tokio::sync::Mutex;
 
-// gRPC 客户端封装
 #[derive(Debug, Clone)]
 pub struct GrpcClient {
     client: Arc<Mutex<SearcherServiceClient<Channel>>>,
 }
 
 impl GrpcClient {
-    // 创建新的 gRPC 连接
     pub async fn connect(addr: &str) -> Result<Self> {
         let endpoint = if addr.contains("https") {
             Endpoint::from_shared(addr.to_string())
@@ -50,18 +48,15 @@ impl GrpcClient {
         })
     }
 
-    // 获取 tip accounts 列表
     pub async fn get_tip_accounts(&self) -> Result<GetTipAccountsResponse> {
         let request = tonic::Request::new(GetTipAccountsRequest {});
         let mut client = self.client.lock().await;
-
         match client.get_tip_accounts(request).await {
             Ok(response) => Ok(response.into_inner()),
             Err(e) => Err(anyhow!("Failed to get tip accounts: {}", e)),
         }
     }
 
-    // 发送 bundle
     pub async fn send_bundle(&self, transactions: Vec<VersionedTransaction>) -> Result<String> {
         println!("准备发送 bundle，交易数量: {}", transactions.len());
         
@@ -76,10 +71,7 @@ impl GrpcClient {
         });
         
         println!("已创建 gRPC 请求");
-        let mut client = self.client.lock().await;
-        println!("已获取 client 锁");
-        
-        match client.send_bundle(request).await {
+        match self.client.lock().await.send_bundle(request).await {
             Ok(response) => {
                 let uuid = response.into_inner().uuid;
                 println!("Bundle 发送成功，UUID: {}", uuid);
