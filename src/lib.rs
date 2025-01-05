@@ -73,6 +73,8 @@ impl GrpcClient {
 
     // 发送 bundle
     pub async fn send_bundle(&self, transactions: Vec<VersionedTransaction>) -> Result<String> {
+        println!("准备发送 bundle，交易数量: {}", transactions.len());
+        
         let request = tonic::Request::new(SendBundleRequest {
             bundle: Some(Bundle {
                 header: None,
@@ -82,11 +84,21 @@ impl GrpcClient {
                     .collect(),
             }),
         });
-
+        
+        println!("已创建 gRPC 请求");
         let mut client = self.client.lock().await;
+        println!("已获取 client 锁");
+        
         match client.send_bundle(request).await {
-            Ok(response) => Ok(response.into_inner().uuid),
-            Err(e) => Err(anyhow!("Failed to send bundle: {}", e)),
+            Ok(response) => {
+                let uuid = response.into_inner().uuid;
+                println!("Bundle 发送成功，UUID: {}", uuid);
+                Ok(uuid)
+            },
+            Err(e) => {
+                println!("Bundle 发送失败: {}", e);
+                Err(anyhow!("Failed to send bundle: {}", e))
+            },
         }
     }
 }
