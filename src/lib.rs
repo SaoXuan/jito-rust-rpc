@@ -198,19 +198,33 @@ impl JitoJsonRpcSDK {
         &self,
         params: Option<Value>,
         uuid: Option<&str>,
-    ) -> Result<Value, anyhow::Error> {
+    ) -> Result<Value> {
         let mut endpoint = "/bundles".to_string();
 
         if let Some(uuid) = uuid {
             endpoint = format!("{}?uuid={}", endpoint, uuid);
         }
 
-        // 先进行参数校验
+        // 参数校验
         Self::validate_bundle_params(&params)?;
 
-        self.send_request(&endpoint, "sendBundle", params)
-            .await
-            .map_err(|e| anyhow!("Request error: {}", e))
+        match self.send_request(&endpoint, "sendBundle", params).await {
+            Ok(response) => {
+                // 如果响应中包含 error 字段，直接抛出异常
+                if let Some(error) = response.get("error") {
+                    let error_msg = error.get("message")
+                        .and_then(|m| m.as_str())
+                        .unwrap_or("未知错误");
+                    return Err(anyhow!("Bundle 发送失败: {}", error_msg));
+                }
+                println!("Bundle 响应: {}", serde_json::to_string_pretty(&response).unwrap());
+                Ok(response)
+            }
+            Err(e) => {
+                println!("Bundle 发送失败: {:?}", e);
+                Err(anyhow!("Failed to send bundle: {}", e))
+            }
+        }
     }
 
   
