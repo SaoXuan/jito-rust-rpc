@@ -1,14 +1,9 @@
 // 导入必要的外部依赖
 use anyhow::{anyhow, Result};
-use proto::packet::Packet as ProtoPacket;
 use rand::seq::SliceRandom;
 use reqwest::Client;
 use serde_json::{json, Value};
-use solana_sdk::transaction::VersionedTransaction;
 use std::fmt;
-use tonic::transport::{Channel, Error as TransportError, Uri};
-use std::sync::Arc;
-use tokio::sync::Mutex;
 
 // 定义 protobuf 生成的模块
 pub mod proto {
@@ -32,83 +27,17 @@ pub mod proto {
         tonic::include_proto!("searcher");
     }
 }
-pub use proto::block_engine::block_engine_validator_client::BlockEngineValidatorClient as BlockEngineClient;
-pub use proto::bundle::{Bundle, BundleResult};
-pub use proto::searcher::searcher_service_client::SearcherServiceClient;
-pub use proto::searcher::{
-    GetTipAccountsRequest, GetTipAccountsResponse, SendBundleRequest, SendBundleResponse,
-};
 
-// gRPC 客户端封装
-#[derive(Debug, Clone)]
-pub struct GrpcClient {
-    client: Arc<Mutex<SearcherServiceClient<Channel>>>,
-}
-
-impl GrpcClient {
-    // 创建新的 gRPC 连接
-    pub async fn connect(addr: &str) -> Result<Self> {
-        let uri = addr.parse::<Uri>().unwrap();
-        let channel = Channel::builder(uri)
-            .connect()
-            .await
-            .map_err(|e| anyhow!("Failed to connect: {}", e))?;
-
-        let client = SearcherServiceClient::new(channel);
-        Ok(Self { 
-            client: Arc::new(Mutex::new(client))
-        })
-    }
-
-    // 获取 tip accounts 列表
-    pub async fn get_tip_accounts(&self) -> Result<GetTipAccountsResponse> {
-        let request = tonic::Request::new(GetTipAccountsRequest {});
-        let mut client = self.client.lock().await;
-
-        match client.get_tip_accounts(request).await {
-            Ok(response) => Ok(response.into_inner()),
-            Err(e) => Err(anyhow!("Failed to get tip accounts: {}", e)),
-        }
-    }
-
-    // 发送 bundle
-    pub async fn send_bundle(&self, transactions: Vec<VersionedTransaction>) -> Result<String> {
-        println!("准备发送 bundle，交易数量: {}", transactions.len());
-        
-        let request = tonic::Request::new(SendBundleRequest {
-            bundle: Some(Bundle {
-                header: None,
-                packets: transactions
-                    .iter()
-                    .map(proto_packet_from_versioned_tx)
-                    .collect(),
-            }),
-        });
-        
-        println!("已创建 gRPC 请求");
-        let mut client = self.client.lock().await;
-        println!("已获取 client 锁");
-        
-        match client.send_bundle(request).await {
-            Ok(response) => {
-                let uuid = response.into_inner().uuid;
-                println!("Bundle 发送成功，UUID: {}", uuid);
-                Ok(uuid)
-            },
-            Err(e) => {
-                println!("Bundle 发送失败: {}", e);
-                Err(anyhow!("Failed to send bundle: {}", e))
-            },
-        }
-    }
-}
+// 导出 gRPC 模块
+pub mod grpc;
+pub use grpc::GrpcClient;
 
 // JSON-RPC SDK 实现
 pub struct JitoJsonRpcSDK {
     base_url: String,                // API 基础 URL
     uuid: Option<String>,            // 可选的 UUID
     client: Client,                  // HTTP 客户端
-    grpc_client: Option<GrpcClient>, // 可选的 gRPC 客户端
+    grpc_url: Option<String>,        // gRPC URL
 }
 
 #[derive(Debug)]
@@ -133,28 +62,10 @@ impl JitoJsonRpcSDK {
             base_url: base_url.to_string(),
             uuid,
             client: Client::new(),
-            grpc_client: None,
+            grpc_url: None,
         }
     }
 
-    // 使用 gRPC 创建新的 SDK 实例
-    pub async fn new_with_grpc(
-        base_url: &str,
-        uuid: Option<String>,
-        grpc_url: &str,
-    ) -> Result<Self> {
-        Ok(Self {
-            base_url: base_url.to_string(),
-            uuid,
-            client: Client::new(),
-            grpc_client: Some(GrpcClient::connect(grpc_url).await?),
-        })
-    }
-
-    pub async fn enable_grpc(&mut self, grpc_url: &str) -> Result<()> {
-        self.grpc_client = Some(GrpcClient::connect(grpc_url).await?);
-        Ok(())
-    }
 
     // 发送 JSON-RPC 请求的通用方法
     async fn send_request(
@@ -244,21 +155,7 @@ impl JitoJsonRpcSDK {
         self.send_request(&endpoint, "getTipAccounts", None).await
     }
 
-    // 新增 GRPC 版本的 get_tip_accounts 方法
-    pub async fn get_tip_accounts_grpc(&self) -> Result<Value> {
-        let grpc_client = self
-            .grpc_client
-            .as_ref()
-            .ok_or_else(|| anyhow!("gRPC not enabled. Call enable_grpc() first"))?;
-
-        let response = grpc_client.get_tip_accounts().await?;
-
-        Ok(json!({
-            "grpc": "2.0",
-            "id": 1,
-            "result": response.accounts
-        }))
-    }
+   
 
     pub fn prettify(value: Value) -> PrettyJsonValue {
         PrettyJsonValue(value)
@@ -306,32 +203,5 @@ impl JitoJsonRpcSDK {
             .map_err(|e| anyhow!("Request error: {}", e))
     }
 
-    // gprc 版本发送交易包
-    pub async fn send_bundle_with_grpc(
-        &self,
-        transactions: Vec<VersionedTransaction>,
-        _uuid: Option<&str>,
-    ) -> Result<Value> {
-        let grpc_client = self
-            .grpc_client
-            .as_ref()
-            .ok_or_else(|| anyhow!("gRPC not enabled. Call enable_grpc() first"))?;
-
-        let response = grpc_client.send_bundle(transactions).await?;
-
-        Ok(json!({
-            "grpc": "2.0",
-            "id": 1,
-            "result": {
-                "bundle_id": response
-            }
-        }))
-    }
-}
-
-fn proto_packet_from_versioned_tx(tx: &VersionedTransaction) -> ProtoPacket {
-    ProtoPacket {
-        data: bincode::serialize(&tx).unwrap(),
-        meta: None,
-    }
+  
 }
