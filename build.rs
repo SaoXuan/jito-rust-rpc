@@ -6,15 +6,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     tonic_build::configure()
         .build_server(false)
         .out_dir(out_dir)
-        .type_attribute(".", "#[derive(serde::Serialize, serde::Deserialize)]")
         .compile(
             &[
-                "proto/jito-protos/proto/block_engine.proto",
-                "proto/jito-protos/proto/bundle.proto",
-                "proto/jito-protos/proto/packet.proto",
-                "proto/jito-protos/proto/shared.proto",
+                "proto/jito-protos/block_engine.proto",
+                "proto/jito-protos/bundle.proto",
+                "proto/jito-protos/packet.proto",
+                "proto/jito-protos/shared.proto",
+                "proto/jito-protos/searcher.proto",
             ],
-            &["proto/jito-protos/proto"],
+            &["proto/jito-protos"],
         )?;
     Ok(())
 } 
